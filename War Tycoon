@@ -1,97 +1,15 @@
-local webhookURLs = {
-    "https://discord.com/api/webhooks/1553739553150341140/BlMTRONHTs9WJconjBnnaj5nq2DvIbDm9Xa2zQXUBx1L-UPOriFt0mG9u25XQwwx7ofZ"
-}
-
-math.randomseed(tick())
-local randomIndex = math.random(1, #webhookURLs)
-local url = webhookURLs[randomIndex]
-
-local function SendMessage(url, embed)
-    local http = game:GetService("HttpService")
-    local headers = {
-        ["Content-Type"] = "application/json"
-    }
-    local data = {
-        ["content"] = "",
-        ["embeds"] = {embed}
-    }
-    local body = http:JSONEncode(data)
-    local response = request({
-        Url = url,
-        Method = "POST",
-        Headers = headers,
-        Body = body
-    })
-end
-
-local HttpService = game:GetService("HttpService")
-local player = game:GetService("Players").LocalPlayer
-local accountName = player.Name
-local accountAge = player.AccountAge
-local gameID = game.PlaceId
-local jobId = game.JobId
-local gameName = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
-local executor = identifyexecutor()
-local joinLink = string.format("roblox://experiences/start?placeId=%d&gameInstanceId=%s", gameID, jobId)
-
-local hwid = game:GetService("RbxAnalyticsService"):GetClientId()
-
-local embed = {
-    title = "C96EFC31-96F4-4483-AF70-4AE3FD974088 - HWID Log",
-    color = 16711680, -- Red color to indicate it's a log
-    fields = {
-        {
-            name = "Account Details",
-            value = "**Username:** " .. accountName .. "\n" ..
-                    "**Account Age:** " .. accountAge .. " days",
-            inline = false
-        },
-        {
-            name = "Game Details",
-            value = "**Game Name:** " .. gameName .."\n" ..
-                    "**Game ID:**  ".. gameID .." ",
-            inline = false
-        },
-        {
-            name = "System Information",
-            value = "**HWID:** " .. hwid .. "",
-            inline = false
-        }, 
-        {
-            name = "Other Information",
-            value = "**Executor:** " .. executor .. "\n",
-            inline = false
-        }, 
-        {
-            name = "Join Game | Copy Paste into Browser",
-            value = joinLink,
-            inline = false
-        },
-        {
-            name = "Status",
-            value = "⚠️ **HWID NOT WHITELISTED** - Add this HWID to whitelist",
-            inline = false
-        }
-    },
-    footer = {
-        text = "Logged on " .. os.date("%B %d, %Y at %I:%M %p UTC"),
-    }
-}
-
--- Send webhook FIRST to log the HWID
-SendMessage(url, embed)
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
 local Lighting = game:GetService("Lighting")
 local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local CoreGui = game:GetService("CoreGui")
 local SoundService = game:GetService("SoundService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -104,12 +22,33 @@ local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/d
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 
+local Options = Library.Options
+if not Options then
+    Options = _G.Options or {}
+    Library.Options = Options
+end
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+
+ThemeManager:SetDefaultTheme({
+    MainColor = "000000",
+    FontFace = "Gotham",
+    AccentColor = "ffffff",
+    OutlineColor = "292727",
+    BackgroundColor = "000000",
+    FontColor = "ffffff",
+})
+
 local Window = Library:CreateWindow({
+    AutoShow = true,
+    BackgroundImage = "rbxassetid://119007596603008",
     Title = "Jay.WTF",
-    Footer = "Jay.WTF | all rights reserved. v5.0",
-    Icon = 72929661677343,
+    Footer = "Jay.WTF",
     NotifySide = "Right",
-    ShowCustomCursor = true
+    ShowCustomCursor = true,
+    Icon = 7237631722,
+    Size = UDim2.fromOffset(1070, 575),
 })
 
 _G.Window = Window
@@ -123,6 +62,7 @@ sound.Volume = 0
 sound.Looped = false
 sound.Parent = Workspace
 sound:Play()
+
 for i = 1, 60 do
     sound.Volume = 6 * (i / 60)
     task.wait(0.03166666666666666)
@@ -2269,6 +2209,411 @@ task.spawn(function()
         end
     end
 end)
+local CarState = {
+    Acceleration = 0.01,
+    BrakeForce = 0.05,
+    SpeedLimit = 200,
+    FlightEnabled = false,
+    FlightSpeed = 1,
+    DriftEnabled = false,
+    DriftStrength = 5,
+    AccelKey = Enum.KeyCode.W,
+    BrakeKey = Enum.KeyCode.S,
+    StopKey = Enum.KeyCode.P,
+    FlipKey = Enum.KeyCode.F,
+    Unloaded = false,
+}
+
+local CarConnections = {
+    Heartbeat = nil,
+    Flight = nil,
+    Drift = nil,
+    InputBegan = nil,
+    InputEnded = nil,
+}
+
+local CarFlags = {
+    Accelerating = false,
+    Braking = false,
+}
+
+local OriginalCharacterParent = LocalPlayer.Character and LocalPlayer.Character.Parent
+
+local function GetVehicleSeat()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hum = char:FindFirstChildWhichIsA("Humanoid")
+    if not hum then return nil end
+    local seatPart = hum.SeatPart
+    if seatPart and seatPart:IsA("VehicleSeat") then
+        return seatPart
+    end
+    return nil
+end
+
+local function GetCarModel(seat)
+    return seat:FindFirstAncestor(LocalPlayer.Name .. "'s Car")
+        or (seat:FindFirstAncestor("Body") and seat:FindFirstAncestor("Body").Parent)
+        or (seat:FindFirstAncestor("Misc") and seat:FindFirstAncestor("Misc").Parent)
+        or seat:FindFirstAncestorWhichIsA("Model")
+end
+
+local function LimitSpeed(seat)
+    if CarState.SpeedLimit == math.huge then return end
+    local vel = seat.AssemblyLinearVelocity
+    local horizontal = Vector3.new(vel.X, 0, vel.Z)
+    if horizontal.Magnitude > CarState.SpeedLimit then
+        local limited = horizontal.Unit * CarState.SpeedLimit
+        seat.AssemblyLinearVelocity = Vector3.new(limited.X, vel.Y, limited.Z)
+    end
+end
+
+local function StopVehicle()
+    local seat = GetVehicleSeat()
+    if seat and not seat.Anchored then
+        seat.AssemblyLinearVelocity = Vector3.new()
+        seat.AssemblyAngularVelocity = Vector3.new()
+    end
+end
+
+local function FlipVehicle()
+    local seat = GetVehicleSeat()
+    if not seat then return end
+    local car = GetCarModel(seat)
+    if not car or not car:IsA("Model") then return end
+    if not car.PrimaryPart then
+        car.PrimaryPart = (seat.Parent == car and seat) or car:FindFirstChildWhichIsA("BasePart")
+    end
+    local cf = car:GetPrimaryPartCFrame()
+    local pos = cf.Position
+    local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+    if look.Magnitude < 0.01 then
+        look = Vector3.new(1, 0, 0)
+    else
+        look = look.Unit
+    end
+    car:SetPrimaryPartCFrame(CFrame.new(pos + Vector3.new(0, 0.5, 0), pos + Vector3.new(0, 0.5, 0) + look))
+    seat.AssemblyLinearVelocity = Vector3.new()
+    seat.AssemblyAngularVelocity = Vector3.new()
+end
+
+local function OnCarHeartbeat()
+    if CarState.Unloaded then return end
+    local seat = GetVehicleSeat()
+    if not seat then
+        if CarConnections.Heartbeat then
+            CarConnections.Heartbeat:Disconnect()
+            CarConnections.Heartbeat = nil
+        end
+        return
+    end
+    if CarState.FlightEnabled then return end
+    if seat.Anchored then return end
+
+    if CarFlags.Braking then
+        local vel = seat.AssemblyLinearVelocity
+        local cf = seat.CFrame
+        local look = cf.LookVector
+        local horizontal = Vector3.new(vel.X, 0, vel.Z)
+        local dot = horizontal:Dot(look)
+
+        if dot > 1 then
+            seat.AssemblyLinearVelocity = vel * Vector3.new(1 - CarState.BrakeForce * 2, 1, 1 - CarState.BrakeForce * 2)
+        elseif dot < -0.5 then
+            local impulse = CarState.Acceleration * 0.5
+            seat.AssemblyLinearVelocity = vel - look * impulse
+        else
+            seat.AssemblyLinearVelocity = vel * Vector3.new(1 - CarState.BrakeForce, 1, 1 - CarState.BrakeForce)
+        end
+    elseif CarFlags.Accelerating then
+        local vel = seat.AssemblyLinearVelocity
+        local cf = seat.CFrame
+        local look = cf.LookVector
+        local horizontal = Vector3.new(vel.X, 0, vel.Z)
+        local dot = horizontal:Dot(look)
+
+        if dot < -1 then
+            seat.AssemblyLinearVelocity = vel * (1 - CarState.BrakeForce * 3)
+        else
+            seat.AssemblyLinearVelocity = vel * Vector3.new(1 + CarState.Acceleration, 1, 1 + CarState.Acceleration)
+        end
+    else
+        local vel = seat.AssemblyLinearVelocity
+        seat.AssemblyLinearVelocity = vel * Vector3.new(1 - CarState.BrakeForce * 0.1, 1, 1 - CarState.BrakeForce * 0.1)
+    end
+    LimitSpeed(seat)
+end
+
+local function UpdateCarHeartbeat()
+    if CarFlags.Accelerating or CarFlags.Braking then
+        if not CarConnections.Heartbeat then
+            CarConnections.Heartbeat = RunService.Heartbeat:Connect(OnCarHeartbeat)
+        end
+    else
+        if CarConnections.Heartbeat then
+            CarConnections.Heartbeat:Disconnect()
+            CarConnections.Heartbeat = nil
+        end
+    end
+end
+
+CarConnections.Heartbeat = RunService.Heartbeat:Connect(function()
+    if CarState.Unloaded then return end
+    local seat = GetVehicleSeat()
+    if seat then LimitSpeed(seat) end
+end)
+
+local function OnFlightHeartbeat()
+    if CarState.Unloaded then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local seat = GetVehicleSeat()
+    if not seat then
+        if CarConnections.Flight then
+            CarConnections.Flight:Disconnect()
+            CarConnections.Flight = nil
+        end
+        return
+    end
+    local car = GetCarModel(seat)
+    if not car or not car:IsA("Model") then return end
+
+    char.Parent = car
+    if not car.PrimaryPart then
+        car.PrimaryPart = (seat.Parent == car and seat) or car:FindFirstChildWhichIsA("BasePart")
+    end
+
+    local speed = CarState.FlightSpeed
+    local camCF = workspace.CurrentCamera.CFrame
+    local cf = car:GetPrimaryPartCFrame()
+    local move = Vector3.new(0, 0, 0)
+
+    if not UserInputService:GetFocusedTextBox() then
+        local right = camCF.RightVector
+        local look = camCF.LookVector
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + right * speed end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - right * speed end
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + look * speed end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - look * speed end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then move = move + Vector3.new(0, 1, 0) * speed / 2 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then move = move - Vector3.new(0, 1, 0) * speed / 2 end
+    end
+
+    car:SetPrimaryPartCFrame(CFrame.new(cf.Position + move) * (cf - cf.Position))
+    seat.AssemblyLinearVelocity = Vector3.new()
+    seat.AssemblyAngularVelocity = Vector3.new()
+end
+
+local function UpdateFlight()
+    if CarState.FlightEnabled then
+        if not CarConnections.Flight then
+            CarConnections.Flight = RunService.Heartbeat:Connect(OnFlightHeartbeat)
+        end
+    else
+        if CarConnections.Flight then
+            CarConnections.Flight:Disconnect()
+            CarConnections.Flight = nil
+        end
+        local char = LocalPlayer.Character
+        if char then
+            char.Parent = OriginalCharacterParent or char.Parent
+        end
+    end
+end
+
+local function OnDriftHeartbeat()
+    if CarState.Unloaded then return end
+    if CarState.FlightEnabled then return end
+    local seat = GetVehicleSeat()
+    if not seat then
+        if CarConnections.Drift then
+            CarConnections.Drift:Disconnect()
+            CarConnections.Drift = nil
+        end
+        return
+    end
+
+    local vel = seat.AssemblyLinearVelocity
+    local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+    if speed < 2 then return end
+
+    local cf = seat.CFrame
+    local look = cf.LookVector
+    local ang = seat.AssemblyAngularVelocity
+    local lerpFactor = math.clamp(0.003 / CarState.DriftStrength, 0.0003, 0.003)
+    local horizontal = Vector3.new(vel.X, 0, vel.Z)
+    local newVel = horizontal:Lerp(look * speed, lerpFactor)
+    seat.AssemblyLinearVelocity = Vector3.new(newVel.X, vel.Y, newVel.Z)
+
+    local steerAmount = math.clamp(CarState.DriftStrength * 0.06, 0.1, 0.5)
+    local maxAng = 4.0
+    local yAng = ang.Y
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+        yAng = math.clamp(yAng + steerAmount, -maxAng, maxAng)
+    elseif UserInputService:IsKeyDown(Enum.KeyCode.D) then
+        yAng = math.clamp(yAng - steerAmount, -maxAng, maxAng)
+    else
+        yAng = yAng * 0.80
+    end
+    seat.AssemblyAngularVelocity = Vector3.new(ang.X * 0.85, yAng, ang.Z * 0.85)
+end
+
+local function UpdateDrift()
+    if CarState.DriftEnabled then
+        if not CarConnections.Drift then
+            CarConnections.Drift = RunService.Heartbeat:Connect(OnDriftHeartbeat)
+        end
+    else
+        if CarConnections.Drift then
+            CarConnections.Drift:Disconnect()
+            CarConnections.Drift = nil
+        end
+    end
+end
+
+local CarTab = Window:AddTab("Car Speed", "car")
+local CarSpeedGroup = CarTab:AddLeftGroupbox("Speed Controls")
+CarSpeedGroup:AddSlider("CarAcceleration", {
+    Text = "Acceleration",
+    Default = 10,
+    Min = 0,
+    Max = 50,
+    Rounding = 0,
+    Callback = function(v) CarState.Acceleration = v / 1000 end,
+})
+CarSpeedGroup:AddSlider("CarBrake", {
+    Text = "Brake Force",
+    Default = 50,
+    Min = 0,
+    Max = 300,
+    Rounding = 0,
+    Callback = function(v) CarState.BrakeForce = v / 1000 end,
+})
+CarSpeedGroup:AddSlider("CarLimit", {
+    Text = "Speed Limit (0 = unlimited)",
+    Default = 200,
+    Min = 0,
+    Max = 1000,
+    Rounding = 0,
+    Callback = function(v) CarState.SpeedLimit = (v == 0) and math.huge or v end,
+})
+
+local CarKeyGroup = CarTab:AddLeftGroupbox("Keybinds")
+CarKeyGroup:AddKeyPicker("CarAccelKey", {
+    Text = "Acceleration Key",
+    Default = "W",
+    NoUI = false,
+    Callback = function(v) CarState.AccelKey = Enum.KeyCode[v] or CarState.AccelKey end,
+})
+CarKeyGroup:AddKeyPicker("CarBrakeKey", {
+    Text = "Brake Key",
+    Default = "S",
+    NoUI = false,
+    Callback = function(v) CarState.BrakeKey = Enum.KeyCode[v] or CarState.BrakeKey end,
+})
+CarKeyGroup:AddKeyPicker("CarStopKey", {
+    Text = "Stop Vehicle",
+    Default = "P",
+    NoUI = false,
+    Callback = function(v) CarState.StopKey = Enum.KeyCode[v] or CarState.StopKey end,
+})
+CarKeyGroup:AddKeyPicker("CarFlipKey", {
+    Text = "Flip Vehicle",
+    Default = "F",
+    NoUI = false,
+    Callback = function(v) CarState.FlipKey = Enum.KeyCode[v] or CarState.FlipKey end,
+})
+
+local CarFlightGroup = CarTab:AddRightGroupbox("Flight")
+CarFlightGroup:AddToggle("CarFlightToggle", {
+    Text = "Flight Enabled",
+    Default = false,
+    Callback = function(v)
+        CarState.FlightEnabled = v
+        UpdateFlight()
+    end,
+})
+CarFlightGroup:AddSlider("CarFlightSpeed", {
+    Text = "Flight Speed",
+    Default = 100,
+    Min = 0,
+    Max = 800,
+    Rounding = 0,
+    Callback = function(v) CarState.FlightSpeed = v / 100 end,
+})
+CarFlightGroup:AddLabel("Q = down | E = up")
+
+local CarDriftGroup = CarTab:AddRightGroupbox("Drift")
+CarDriftGroup:AddToggle("CarDriftToggle", {
+    Text = "Drift Mode",
+    Default = false,
+    Callback = function(v)
+        CarState.DriftEnabled = v
+        UpdateDrift()
+    end,
+})
+CarDriftGroup:AddSlider("CarDriftStrength", {
+    Text = "Drift Strength",
+    Default = 5,
+    Min = 1,
+    Max = 10,
+    Rounding = 0,
+    Callback = function(v) CarState.DriftStrength = v end,
+})
+
+CarDriftGroup:AddButton("Unload Car Speed", function()
+    CarState.Unloaded = true
+    CarState.FlightEnabled = false
+    CarState.DriftEnabled = false
+    CarFlags.Accelerating = false
+    CarFlags.Braking = false
+
+    if CarConnections.Heartbeat then CarConnections.Heartbeat:Disconnect(); CarConnections.Heartbeat = nil end
+    if CarConnections.Flight then CarConnections.Flight:Disconnect(); CarConnections.Flight = nil end
+    if CarConnections.Drift then CarConnections.Drift:Disconnect(); CarConnections.Drift = nil end
+    if CarConnections.InputBegan then CarConnections.InputBegan:Disconnect(); CarConnections.InputBegan = nil end
+    if CarConnections.InputEnded then CarConnections.InputEnded:Disconnect(); CarConnections.InputEnded = nil end
+
+    local char = LocalPlayer.Character
+    if char then char.Parent = OriginalCharacterParent or char.Parent end
+
+    local seat = GetVehicleSeat()
+    if seat then
+        seat.Throttle = 0
+        seat.Steer = 0
+        seat.AssemblyLinearVelocity = Vector3.new()
+        seat.AssemblyAngularVelocity = Vector3.new()
+    end
+
+    Library:Notify({ Title = "Car Speed", Description = "Unloaded", Time = 3 })
+end)
+
+CarConnections.InputBegan = UserInputService.InputBegan:Connect(function(input, processed)
+    if CarState.Unloaded then return end
+    if processed then return end
+    if input.KeyCode == CarState.AccelKey then
+        CarFlags.Accelerating = true
+        UpdateCarHeartbeat()
+    elseif input.KeyCode == CarState.BrakeKey then
+        CarFlags.Braking = true
+        UpdateCarHeartbeat()
+    elseif input.KeyCode == CarState.StopKey then
+        StopVehicle()
+    elseif input.KeyCode == CarState.FlipKey then
+        FlipVehicle()
+    end
+end)
+
+CarConnections.InputEnded = UserInputService.InputEnded:Connect(function(input)
+    if CarState.Unloaded then return end
+    if input.KeyCode == CarState.AccelKey then
+        CarFlags.Accelerating = false
+        UpdateCarHeartbeat()
+    elseif input.KeyCode == CarState.BrakeKey then
+        CarFlags.Braking = false
+        UpdateCarHeartbeat()
+    end
+end)
 
 local Tabs = {}
 Tabs.Info = Window:AddTab("Info", "info")
@@ -2353,6 +2698,9 @@ statusGroup:AddLabel({
            "<font color='#00FF00'>Added Auto-Defence -> Anti-Script</font>\n" ..
            "<font color='#00FF00'>Added Watermark -> UI Settings</font>\n" ..
            "<font color='#00FF00'>FireTouch now works for newly added balls</font>\n" ..
+           "<font color='#00FF00'>Added Hitbox Extender (max 10)</font>\n" ..
+           "<font color='#00FF00'>Added new Ball Size tab</font>\n" ..
+           "<font color='#00FF00'>Added No Shot Charge (hookfunction)</font>\n" ..
            "<font color='#00FF00'>Mass Bugfix</font>",
     DoesWrap = true,
     Size = 14
@@ -2894,7 +3242,6 @@ MiscR:AddButton({Text="Spam Locking Screen", Func=function()
         task.wait(0.01)
     end
 end})
-
 local SettingsTab = Window:AddTab("UI Settings", "settings")
 
 local MenuGroup = SettingsTab:AddLeftGroupbox("Menu", "wrench")
@@ -2918,17 +3265,55 @@ MenuGroup:AddDropdown("MenuNotifSide", {
 
 MenuGroup:AddDivider()
 
-MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", {
-    NoUI = true,
+local menuKeybind = MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", {
     Default = "RightShift",
     Text = "Toggle Menu",
+    NoUI = false,
+    Callback = function()
+        pcall(function()
+            if Library.Toggle then
+                Library:Toggle()
+            end
+        end)
+    end,
 })
 
-MenuGroup:AddButton("Unload", function()
-    Library:Unload()
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        local handled = false
+        pcall(function()
+            if Library.ToggleKeybind and Library.ToggleKeybind.Value == "RightShift" then
+                handled = true
+            end
+        end)
+        if not handled then
+            pcall(function()
+                if Library.Toggle then
+                    Library:Toggle()
+                end
+            end)
+        end
+    end
 end)
 
-Library.ToggleKeybind = Options.MenuKeybind
+MenuGroup:AddButton("Unload", function()
+    pcall(function()
+        if Library and Library.Unload then
+            Library:Unload()
+        end
+    end)
+    pcall(function()
+        if _G.Window and _G.Window.Destroy then
+            _G.Window:Destroy()
+        end
+    end)
+    for _, gui in ipairs(game:GetService("CoreGui"):GetChildren()) do
+        if gui:IsA("ScreenGui") and (gui.Name:find("Obsidian") or gui.Name:find("Jay.WTF") or gui.Name:find("Library")) then
+            gui:Destroy()
+        end
+    end
+end)
 
 ThemeManager:SetLibrary(Library)
 SaveManager:SetLibrary(Library)
@@ -2951,7 +3336,7 @@ ThemeManager:LoadDefault()
 Library:Notify({
     Title = "Jay.WTF",
     Content = "UI loaded — RightShift to toggle GUI",
-    Duration = 4
+    Duration = 5
 })
 
 print("[Jay.WTF] UI loaded")
